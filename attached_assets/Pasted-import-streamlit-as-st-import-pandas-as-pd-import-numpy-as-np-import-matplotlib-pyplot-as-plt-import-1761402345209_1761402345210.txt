@@ -1,0 +1,1554 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer, KNNImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve, auc, classification_report
+from sklearn.inspection import PartialDependenceDisplay
+from xgboost import XGBClassifier
+import joblib
+import io
+import os
+from datetime import datetime
+
+st.set_page_config(page_title="Diabetes Prediction App", layout="wide", initial_sidebar_state="expanded")
+
+st.title("🏥 Diabetes Prediction Application")
+st.markdown("### AI-Powered Diabetes Risk Assessment with Explainable Insights")
+
+def create_sample_data():
+    """Create a sample diabetes dataset for demonstration"""
+    np.random.seed(42)
+    n_samples = 200
+    
+    data = {
+        'Pregnancies': np.random.randint(0, 17, n_samples),
+        'Glucose': np.random.randint(0, 200, n_samples),
+        'BloodPressure': np.random.randint(0, 122, n_samples),
+        'SkinThickness': np.random.randint(0, 99, n_samples),
+        'Insulin': np.random.randint(0, 846, n_samples),
+        'BMI': np.random.uniform(0, 67, n_samples),
+        'DiabetesPedigreeFunction': np.random.uniform(0.078, 2.42, n_samples),
+        'Age': np.random.randint(21, 81, n_samples),
+        'Outcome': np.random.randint(0, 2, n_samples)
+    }
+    
+    df = pd.DataFrame(data)
+    
+    mask = np.random.rand(n_samples, len(df.columns)) < 0.15
+    for col in df.columns[:-1]:
+        df.loc[mask[:, df.columns.get_loc(col)], col] = np.nan
+    
+    return df
+
+def introduce_missing_values(df, missing_rate=0.1):
+    """Introduce missing values in the dataset"""
+    df_copy = df.copy()
+    for col in df_copy.columns[:-1]:
+        mask = np.random.rand(len(df_copy)) < missing_rate
+        df_copy.loc[mask, col] = np.nan
+    return df_copy
+
+def impute_missing_values(df, method='mean', target_col='Outcome'):
+    """Impute missing values using various methods"""
+    df_imputed = df.copy()
+    features = df_imputed.drop(columns=[target_col]).columns
+    
+    if method == 'mean':
+        imputer = SimpleImputer(strategy='mean')
+    elif method == 'median':
+        imputer = SimpleImputer(strategy='median')
+    elif method == 'most_frequent':
+        imputer = SimpleImputer(strategy='most_frequent')
+    elif method == 'knn':
+        imputer = KNNImputer(n_neighbors=5)
+    
+    df_imputed[features] = imputer.fit_transform(df_imputed[features])
+    
+    return df_imputed
+
+def plot_missing_data(df):
+    """Visualize missing data in the dataset"""
+    missing_data = df.isnull().sum()
+    missing_percent = (missing_data / len(df)) * 100
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    missing_df = pd.DataFrame({'Missing Values': missing_data, 'Percentage': missing_percent})
+    missing_df = missing_df[missing_df['Missing Values'] > 0].sort_values('Missing Values', ascending=False)
+    
+    if len(missing_df) > 0:
+        sns.barplot(x=missing_df.index, y=missing_df['Missing Values'], ax=ax)
+        ax.set_title('Missing Values by Feature', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Features', fontsize=12)
+        ax.set_ylabel('Count of Missing Values', fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        
+        for i, (idx, row) in enumerate(missing_df.iterrows()):
+            ax.text(i, row['Missing Values'], f"{row['Percentage']:.1f}%", 
+                   ha='center', va='bottom', fontsize=10)
+    else:
+        ax.text(0.5, 0.5, 'No Missing Values Found', ha='center', va='center', fontsize=16)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+    
+    plt.tight_layout()
+    return fig
+
+def plot_feature_distributions(df, target_col='Outcome'):
+    """Plot distribution of features by diabetes status"""
+    features = [col for col in df.columns if col != target_col]
+    n_features = len(features)
+    n_cols = 3
+    n_rows = (n_features + n_cols - 1) // n_cols
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, n_rows * 4))
+    axes = axes.flatten() if n_features > 1 else [axes]
+    
+    for idx, feature in enumerate(features):
+        ax = axes[idx]
+        
+        for outcome in df[target_col].unique():
+            data = df[df[target_col] == outcome][feature].dropna()
+            ax.hist(data, alpha=0.6, label=f'Outcome {int(outcome)}', bins=20)
+        
+        ax.set_title(f'{feature} Distribution', fontweight='bold')
+        ax.set_xlabel(feature)
+        ax.set_ylabel('Frequency')
+        ax.legend()
+    
+    for idx in range(n_features, len(axes)):
+        fig.delaxes(axes[idx])
+    
+    plt.tight_layout()
+    return fig
+
+def plot_correlation_matrix(df, target_col='Outcome'):
+    """Plot correlation matrix"""
+    fig, ax = plt.subplots(figsize=(12, 10))
+    corr_matrix = df.corr()
+    sns.heatmap(corr_matrix, annot=True, fmt='.2f', cmap='coolwarm', 
+                center=0, square=True, ax=ax, cbar_kws={"shrink": 0.8})
+    ax.set_title('Feature Correlation Matrix', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+def compare_imputation_methods(df_with_missing, target_col='Outcome'):
+    """Compare different imputation methods using a simple model"""
+    methods = ['mean', 'median', 'most_frequent', 'knn']
+    comparison_results = {}
+    
+    for method in methods:
+        df_imputed = impute_missing_values(df_with_missing, method=method, target_col=target_col)
+        
+        X = df_imputed.drop(columns=[target_col])
+        y = df_imputed[target_col]
+        
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        model = RandomForestClassifier(n_estimators=50, random_state=42)
+        model.fit(X_train_scaled, y_train)
+        y_pred = model.predict(X_test_scaled)
+        
+        comparison_results[method] = {
+            'accuracy': accuracy_score(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, zero_division=0),
+            'recall': recall_score(y_test, y_pred, zero_division=0),
+            'f1': f1_score(y_test, y_pred, zero_division=0)
+        }
+    
+    return comparison_results
+
+def train_models(X_train, X_test, y_train, y_test):
+    """Train multiple ML models"""
+    models = {
+        'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
+        'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
+        'XGBoost': XGBClassifier(random_state=42, eval_metric='logloss')
+    }
+    
+    results = {}
+    
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+        
+        results[name] = {
+            'model': model,
+            'y_pred': y_pred,
+            'y_pred_proba': y_pred_proba,
+            'accuracy': accuracy_score(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, zero_division=0),
+            'recall': recall_score(y_test, y_pred, zero_division=0),
+            'f1': f1_score(y_test, y_pred, zero_division=0),
+            'confusion_matrix': confusion_matrix(y_test, y_pred)
+        }
+    
+    return results
+
+def plot_confusion_matrix(cm, model_name):
+    """Plot confusion matrix"""
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax,
+                xticklabels=['No Diabetes', 'Diabetes'],
+                yticklabels=['No Diabetes', 'Diabetes'])
+    ax.set_title(f'Confusion Matrix - {model_name}', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Actual', fontsize=12)
+    ax.set_xlabel('Predicted', fontsize=12)
+    plt.tight_layout()
+    return fig
+
+def plot_roc_curves(results, y_test):
+    """Plot ROC curves for all models"""
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    for name, result in results.items():
+        fpr, tpr, _ = roc_curve(y_test, result['y_pred_proba'])
+        roc_auc = auc(fpr, tpr)
+        ax.plot(fpr, tpr, label=f'{name} (AUC = {roc_auc:.2f})', linewidth=2)
+    
+    ax.plot([0, 1], [0, 1], 'k--', label='Random Classifier')
+    ax.set_xlabel('False Positive Rate', fontsize=12)
+    ax.set_ylabel('True Positive Rate', fontsize=12)
+    ax.set_title('ROC Curves Comparison', fontsize=14, fontweight='bold')
+    ax.legend(loc='lower right')
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+def plot_feature_importance(model, feature_names, model_name):
+    """Plot feature importance"""
+    if hasattr(model, 'feature_importances_'):
+        importances = model.feature_importances_
+    elif hasattr(model, 'coef_'):
+        importances = np.abs(model.coef_[0])
+    else:
+        return None
+    
+    indices = np.argsort(importances)[::-1]
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.bar(range(len(importances)), importances[indices])
+    ax.set_xticks(range(len(importances)))
+    ax.set_xticklabels([feature_names[i] for i in indices], rotation=45, ha='right')
+    ax.set_title(f'Feature Importance - {model_name}', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Features', fontsize=12)
+    ax.set_ylabel('Importance', fontsize=12)
+    plt.tight_layout()
+    return fig
+
+def explain_diabetes_risk(feature_importance_dict):
+    """Explain why diabetes may occur based on feature importance"""
+    explanations = {
+        'Glucose': "High blood glucose levels are the primary indicator of diabetes. Consistently elevated glucose indicates the body's inability to properly process sugar.",
+        'BMI': "Body Mass Index reflects body fat. Higher BMI is strongly associated with Type 2 diabetes as excess fat can cause insulin resistance.",
+        'Age': "Diabetes risk increases with age due to reduced physical activity, muscle mass loss, and natural decline in insulin production.",
+        'DiabetesPedigreeFunction': "Family history and genetic predisposition play a crucial role. This function represents the genetic likelihood of developing diabetes.",
+        'Pregnancies': "Multiple pregnancies can increase diabetes risk due to hormonal changes and stress on insulin-producing cells.",
+        'Insulin': "Abnormal insulin levels indicate problems with the body's ability to regulate blood sugar effectively.",
+        'BloodPressure': "High blood pressure often coexists with diabetes and indicates metabolic syndrome, increasing overall diabetes risk.",
+        'SkinThickness': "Skin thickness can be an indirect measure of body fat and insulin resistance."
+    }
+    
+    return explanations
+
+def save_model(model_name, model, scaler, feature_names, metrics):
+    """Save trained model with metadata"""
+    if not os.path.exists('saved_models'):
+        os.makedirs('saved_models')
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_filename = f"saved_models/{model_name.replace(' ', '_')}_{timestamp}.pkl"
+    
+    model_package = {
+        'model': model,
+        'scaler': scaler,
+        'feature_names': feature_names,
+        'metrics': metrics,
+        'timestamp': timestamp,
+        'model_name': model_name
+    }
+    
+    joblib.dump(model_package, model_filename)
+    return model_filename
+
+def load_model(model_filename):
+    """Load a saved model"""
+    model_package = joblib.load(model_filename)
+    return model_package
+
+def get_saved_models():
+    """Get list of saved models"""
+    if not os.path.exists('saved_models'):
+        return []
+    
+    models = []
+    for filename in os.listdir('saved_models'):
+        if filename.endswith('.pkl'):
+            filepath = os.path.join('saved_models', filename)
+            try:
+                model_pkg = joblib.load(filepath)
+                models.append({
+                    'filename': filepath,
+                    'name': model_pkg['model_name'],
+                    'timestamp': model_pkg['timestamp'],
+                    'accuracy': model_pkg['metrics']['accuracy']
+                })
+            except:
+                pass
+    
+    return sorted(models, key=lambda x: x['timestamp'], reverse=True)
+
+def tune_hyperparameters(X_train, y_train, model_name):
+    """Perform hyperparameter tuning using GridSearchCV"""
+    if model_name == 'Logistic Regression':
+        model = LogisticRegression(max_iter=1000, random_state=42)
+        param_grid = {
+            'C': [0.01, 0.1, 1, 10],
+            'solver': ['lbfgs', 'liblinear']
+        }
+    elif model_name == 'Random Forest':
+        model = RandomForestClassifier(random_state=42)
+        param_grid = {
+            'n_estimators': [50, 100, 200],
+            'max_depth': [10, 20, None],
+            'min_samples_split': [2, 5]
+        }
+    elif model_name == 'XGBoost':
+        model = XGBClassifier(random_state=42, eval_metric='logloss')
+        param_grid = {
+            'n_estimators': [50, 100, 200],
+            'max_depth': [3, 5, 7],
+            'learning_rate': [0.01, 0.1, 0.3]
+        }
+    else:
+        return None, None
+    
+    grid_search = GridSearchCV(
+        model, param_grid, cv=3, scoring='accuracy', n_jobs=-1, verbose=0
+    )
+    grid_search.fit(X_train, y_train)
+    
+    return grid_search.best_estimator_, grid_search.best_params_
+
+def plot_partial_dependence(model, X, feature_names, features_to_plot):
+    """Plot partial dependence plots"""
+    fig, ax = plt.subplots(figsize=(14, 10))
+    
+    try:
+        display = PartialDependenceDisplay.from_estimator(
+            model, X, features_to_plot, feature_names=feature_names,
+            ax=ax, n_cols=3, grid_resolution=20
+        )
+        plt.tight_layout()
+        return fig
+    except:
+        return None
+
+sidebar_selection = st.sidebar.selectbox(
+    "Navigation",
+    ["🏠 Home", "📊 Data Upload & Preprocessing", "🤖 Model Training", "🔮 Make Predictions", "📚 Tutorial & Learning"]
+)
+
+if sidebar_selection == "🏠 Home":
+    st.markdown("""
+    ## Welcome to the Diabetes Prediction Application!
+    
+    This comprehensive tool helps you:
+    
+    ### 🎯 Key Features:
+    - **📁 Upload CSV Data**: Import your diabetes dataset for analysis
+    - **🔧 Handle Missing Data**: Automatically detect and fill missing values using multiple imputation methods
+    - **📊 Visualize Data**: Interactive charts and graphs showing data distributions and patterns
+    - **🤖 Train ML Models**: Build and compare multiple machine learning models
+    - **📈 Performance Metrics**: Detailed evaluation with accuracy, precision, recall, F1-score, and ROC curves
+    - **💡 Explainable AI**: Understand which features contribute most to diabetes predictions
+    - **🔮 Make Predictions**: Predict diabetes risk for new patients
+    - **📚 Learn**: Step-by-step tutorials on data science and machine learning
+    
+    ### 🚀 Getting Started:
+    1. Navigate to **Data Upload & Preprocessing** to load your data
+    2. Explore visualizations and handle missing values
+    3. Go to **Model Training** to build and evaluate models
+    4. Use **Make Predictions** to assess diabetes risk for new cases
+    5. Check **Tutorial & Learning** to understand the entire process
+    
+    ### 📋 Expected Data Format:
+    Your CSV file should contain these columns:
+    - **Pregnancies**: Number of pregnancies
+    - **Glucose**: Plasma glucose concentration
+    - **BloodPressure**: Diastolic blood pressure (mm Hg)
+    - **SkinThickness**: Triceps skin fold thickness (mm)
+    - **Insulin**: 2-Hour serum insulin (mu U/ml)
+    - **BMI**: Body mass index
+    - **DiabetesPedigreeFunction**: Diabetes pedigree function
+    - **Age**: Age in years
+    - **Outcome**: 0 (No diabetes) or 1 (Has diabetes)
+    
+    Use the sidebar to navigate through the application!
+    """)
+    
+    st.info("💡 Don't have data? No problem! The app can generate sample data for you to explore all features.")
+
+elif sidebar_selection == "📊 Data Upload & Preprocessing":
+    st.header("📊 Data Upload & Preprocessing")
+    
+    data_option = st.radio("Choose data source:", ["Upload CSV File", "Use Sample Data"])
+    
+    if data_option == "Upload CSV File":
+        uploaded_file = st.file_uploader("Upload your diabetes dataset (CSV)", type=['csv'])
+        
+        if uploaded_file is not None:
+            try:
+                df_original = pd.read_csv(uploaded_file)
+                st.success(f"✅ File uploaded successfully! Shape: {df_original.shape}")
+                st.session_state['df_original'] = df_original
+            except Exception as e:
+                st.error(f"❌ Error reading file: {e}")
+                st.stop()
+        elif 'df_original' not in st.session_state:
+            st.info("👆 Please upload a CSV file to continue")
+            st.stop()
+        else:
+            df_original = st.session_state['df_original']
+    else:
+        df_original = create_sample_data()
+        st.session_state['df_original'] = df_original
+        st.success(f"✅ Sample data generated! Shape: {df_original.shape}")
+    
+    df_original = st.session_state['df_original']
+    
+    st.subheader("📋 Data Preview")
+    st.dataframe(df_original.head(10))
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Rows", df_original.shape[0])
+    with col2:
+        st.metric("Total Columns", df_original.shape[1])
+    with col3:
+        st.metric("Total Missing Values", df_original.isnull().sum().sum())
+    
+    st.subheader("📊 Dataset Statistics")
+    st.dataframe(df_original.describe())
+    
+    st.subheader("🔍 Missing Data Analysis")
+    missing_count = df_original.isnull().sum().sum()
+    
+    if missing_count > 0:
+        st.warning(f"⚠️ Found {missing_count} missing values in the dataset")
+        
+        fig_missing = plot_missing_data(df_original)
+        st.pyplot(fig_missing)
+        
+        st.subheader("🔧 Handle Missing Values")
+        
+        imputation_method = st.selectbox(
+            "Select imputation method:",
+            ["mean", "median", "most_frequent", "knn"],
+            help="Choose how to fill missing values"
+        )
+        
+        method_descriptions = {
+            "mean": "Replaces missing values with the average of the column",
+            "median": "Replaces missing values with the middle value of the column",
+            "most_frequent": "Replaces missing values with the most common value",
+            "knn": "Uses K-Nearest Neighbors to predict missing values based on similar records"
+        }
+        
+        st.info(f"📝 {method_descriptions[imputation_method]}")
+        
+        if st.button("Apply Imputation", type="primary"):
+            with st.spinner("Imputing missing values..."):
+                df_imputed = impute_missing_values(df_original, method=imputation_method)
+                st.session_state['df_imputed'] = df_imputed
+                st.session_state['imputation_method'] = imputation_method
+                st.success(f"✅ Missing values imputed using {imputation_method} method!")
+                st.balloons()
+        
+        if 'df_imputed' in st.session_state:
+            df_imputed = st.session_state['df_imputed']
+            st.subheader("✨ Cleaned Data Preview")
+            st.dataframe(df_imputed.head(10))
+            
+            st.metric("Remaining Missing Values", df_imputed.isnull().sum().sum())
+            
+            csv = df_imputed.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Cleaned Dataset",
+                data=csv,
+                file_name="cleaned_diabetes_data.csv",
+                mime="text/csv"
+            )
+    else:
+        st.success("✅ No missing values found in the dataset!")
+        st.session_state['df_imputed'] = df_original
+    
+    if missing_count > 0:
+        st.subheader("📊 Compare Imputation Methods")
+        st.markdown("""
+        Compare different imputation strategies to see which works best for your data.
+        This trains a quick model with each method to evaluate performance.
+        """)
+        
+        if st.button("🔬 Compare All Imputation Methods"):
+            with st.spinner("Testing all imputation methods... This may take a minute..."):
+                comparison_results = compare_imputation_methods(df_original)
+                st.session_state['imputation_comparison'] = comparison_results
+                
+                st.subheader("🏆 Imputation Method Comparison Results")
+                
+                comparison_df = pd.DataFrame(comparison_results).T
+                comparison_df = comparison_df.round(4)
+                comparison_df.index.name = 'Method'
+                comparison_df.reset_index(inplace=True)
+                comparison_df['Method'] = comparison_df['Method'].str.title()
+                
+                st.dataframe(comparison_df, use_container_width=True)
+                
+                best_method = max(comparison_results.keys(), 
+                                key=lambda x: comparison_results[x]['accuracy'])
+                st.success(f"🎯 Best performing imputation method: **{best_method}** with {comparison_results[best_method]['accuracy']:.4f} accuracy")
+                
+                fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+                metrics = ['accuracy', 'precision', 'recall', 'f1']
+                
+                for idx, metric in enumerate(metrics):
+                    ax = axes[idx // 2, idx % 2]
+                    methods = list(comparison_results.keys())
+                    values = [comparison_results[m][metric] for m in methods]
+                    
+                    bars = ax.bar(methods, values, color=['#3498db', '#e74c3c', '#2ecc71', '#f39c12'])
+                    ax.set_title(f'{metric.upper()} Comparison', fontweight='bold', fontsize=12)
+                    ax.set_ylabel(metric.capitalize())
+                    ax.set_ylim([0, 1])
+                    ax.grid(axis='y', alpha=0.3)
+                    
+                    for bar in bars:
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2., height,
+                               f'{height:.3f}',
+                               ha='center', va='bottom', fontsize=9)
+                
+                plt.tight_layout()
+                st.pyplot(fig)
+                
+                st.info("""
+                **Understanding the Results:**
+                - **Accuracy**: Overall correctness of predictions
+                - **Precision**: Of predicted diabetes cases, how many were correct
+                - **Recall**: Of actual diabetes cases, how many were found
+                - **F1**: Balance between precision and recall
+                
+                Choose the method that performs best for your specific needs. If recall is important (don't miss diabetes cases), prioritize that metric.
+                """)
+    
+    if 'df_imputed' in st.session_state:
+        st.subheader("📈 Data Visualizations")
+        
+        df_viz = st.session_state['df_imputed']
+        
+        viz_option = st.selectbox(
+            "Select visualization:",
+            ["Feature Distributions", "Correlation Matrix", "Diabetes Distribution"]
+        )
+        
+        if viz_option == "Feature Distributions":
+            with st.spinner("Generating distribution plots..."):
+                fig_dist = plot_feature_distributions(df_viz)
+                st.pyplot(fig_dist)
+                st.markdown("""
+                **📊 Understanding Feature Distributions:**
+                - Blue bars represent patients without diabetes
+                - Orange bars represent patients with diabetes
+                - Look for features where the distributions differ significantly between groups
+                """)
+        
+        elif viz_option == "Correlation Matrix":
+            with st.spinner("Generating correlation matrix..."):
+                fig_corr = plot_correlation_matrix(df_viz)
+                st.pyplot(fig_corr)
+                st.markdown("""
+                **📊 Understanding the Correlation Matrix:**
+                - Values range from -1 to 1
+                - Values close to 1 indicate strong positive correlation
+                - Values close to -1 indicate strong negative correlation
+                - Values close to 0 indicate weak or no correlation
+                """)
+        
+        elif viz_option == "Diabetes Distribution":
+            outcome_counts = df_viz['Outcome'].value_counts()
+            fig = px.pie(values=outcome_counts.values, 
+                        names=['No Diabetes', 'Has Diabetes'],
+                        title='Distribution of Diabetes Cases',
+                        color_discrete_sequence=['#2ecc71', '#e74c3c'])
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.metric("Patients with Diabetes", f"{outcome_counts.get(1, 0)} ({outcome_counts.get(1, 0)/len(df_viz)*100:.1f}%)")
+            st.metric("Patients without Diabetes", f"{outcome_counts.get(0, 0)} ({outcome_counts.get(0, 0)/len(df_viz)*100:.1f}%)")
+
+elif sidebar_selection == "🤖 Model Training":
+    st.header("🤖 Model Training & Evaluation")
+    
+    if 'df_imputed' not in st.session_state:
+        st.warning("⚠️ Please upload and preprocess data first in the 'Data Upload & Preprocessing' section")
+        st.stop()
+    
+    df = st.session_state['df_imputed']
+    
+    st.subheader("⚙️ Training Configuration")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        test_size = st.slider("Test set size (%)", 10, 40, 20) / 100
+    with col2:
+        random_state = st.number_input("Random state (for reproducibility)", 0, 100, 42)
+    
+    if st.button("🚀 Train Models", type="primary"):
+        with st.spinner("Training models... This may take a moment..."):
+            
+            X = df.drop(columns=['Outcome'])
+            y = df['Outcome']
+            
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=random_state, stratify=y
+            )
+            
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            
+            results = train_models(X_train_scaled, X_test_scaled, y_train, y_test)
+            
+            st.session_state['results'] = results
+            st.session_state['X_train'] = X_train_scaled
+            st.session_state['X_test'] = X_test_scaled
+            st.session_state['y_train'] = y_train
+            st.session_state['y_test'] = y_test
+            st.session_state['scaler'] = scaler
+            st.session_state['feature_names'] = X.columns.tolist()
+            
+            st.success("✅ Models trained successfully!")
+            st.balloons()
+    
+    if 'results' in st.session_state:
+        results = st.session_state['results']
+        y_test = st.session_state['y_test']
+        feature_names = st.session_state['feature_names']
+        
+        st.subheader("📊 Model Performance Comparison")
+        
+        performance_data = []
+        for name, result in results.items():
+            performance_data.append({
+                'Model': name,
+                'Accuracy': f"{result['accuracy']:.4f}",
+                'Precision': f"{result['precision']:.4f}",
+                'Recall': f"{result['recall']:.4f}",
+                'F1 Score': f"{result['f1']:.4f}"
+            })
+        
+        performance_df = pd.DataFrame(performance_data)
+        st.dataframe(performance_df, use_container_width=True)
+        
+        best_model_name = max(results.keys(), key=lambda x: results[x]['accuracy'])
+        st.success(f"🏆 Best performing model: **{best_model_name}** with {results[best_model_name]['accuracy']:.2%} accuracy")
+        
+        st.subheader("📈 Detailed Model Analysis")
+        
+        selected_model = st.selectbox("Select model to analyze:", list(results.keys()))
+        
+        tab1, tab2, tab3 = st.tabs(["Confusion Matrix", "ROC Curve", "Feature Importance"])
+        
+        with tab1:
+            fig_cm = plot_confusion_matrix(results[selected_model]['confusion_matrix'], selected_model)
+            st.pyplot(fig_cm)
+            
+            st.markdown("""
+            **Understanding the Confusion Matrix:**
+            - **Top-left**: True Negatives (correctly predicted no diabetes)
+            - **Top-right**: False Positives (incorrectly predicted diabetes)
+            - **Bottom-left**: False Negatives (missed diabetes cases)
+            - **Bottom-right**: True Positives (correctly predicted diabetes)
+            """)
+        
+        with tab2:
+            fig_roc = plot_roc_curves(results, y_test)
+            st.pyplot(fig_roc)
+            
+            st.markdown("""
+            **Understanding ROC Curves:**
+            - The curve shows the trade-off between true positive rate and false positive rate
+            - AUC (Area Under Curve) close to 1.0 indicates excellent performance
+            - AUC of 0.5 indicates random guessing
+            - The curve closer to the top-left corner indicates better performance
+            """)
+        
+        with tab3:
+            fig_importance = plot_feature_importance(
+                results[selected_model]['model'], 
+                feature_names, 
+                selected_model
+            )
+            if fig_importance:
+                st.pyplot(fig_importance)
+                
+                st.subheader("💡 Why Diabetes May Occur - Feature Analysis")
+                
+                if hasattr(results[selected_model]['model'], 'feature_importances_'):
+                    importances = results[selected_model]['model'].feature_importances_
+                elif hasattr(results[selected_model]['model'], 'coef_'):
+                    importances = np.abs(results[selected_model]['model'].coef_[0])
+                
+                feature_importance_dict = dict(zip(feature_names, importances))
+                sorted_features = sorted(feature_importance_dict.items(), key=lambda x: x[1], reverse=True)
+                
+                explanations = explain_diabetes_risk(feature_importance_dict)
+                
+                st.markdown("### 🔍 Top Risk Factors:")
+                for i, (feature, importance) in enumerate(sorted_features[:5], 1):
+                    st.markdown(f"""
+                    **{i}. {feature}** (Importance: {importance:.4f})
+                    
+                    {explanations.get(feature, 'This feature contributes to diabetes prediction.')}
+                    """)
+            else:
+                st.info("Feature importance not available for this model")
+        
+        st.subheader("📋 Classification Report")
+        model_for_report = results[selected_model]['model']
+        X_test = st.session_state['X_test']
+        y_pred = model_for_report.predict(X_test)
+        report = classification_report(y_test, y_pred, target_names=['No Diabetes', 'Has Diabetes'])
+        st.text(report)
+        
+        st.subheader("💾 Save/Load Models")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Save Current Model")
+            model_to_save = st.selectbox("Select model to save:", list(results.keys()), key="save_model_select")
+            
+            if st.button("💾 Save Model", type="primary"):
+                metrics = {
+                    'accuracy': results[model_to_save]['accuracy'],
+                    'precision': results[model_to_save]['precision'],
+                    'recall': results[model_to_save]['recall'],
+                    'f1': results[model_to_save]['f1']
+                }
+                
+                filename = save_model(
+                    model_to_save,
+                    results[model_to_save]['model'],
+                    st.session_state['scaler'],
+                    feature_names,
+                    metrics
+                )
+                st.success(f"✅ Model saved successfully: {filename}")
+                st.balloons()
+        
+        with col2:
+            st.markdown("#### Load Saved Model")
+            saved_models = get_saved_models()
+            
+            if saved_models:
+                model_options = [f"{m['name']} - {m['timestamp']} (Acc: {m['accuracy']:.4f})" 
+                               for m in saved_models]
+                selected_saved = st.selectbox("Select saved model:", model_options, key="load_model_select")
+                
+                if st.button("📂 Load Model"):
+                    idx = model_options.index(selected_saved)
+                    model_pkg = load_model(saved_models[idx]['filename'])
+                    
+                    st.session_state['loaded_model'] = model_pkg['model']
+                    st.session_state['scaler'] = model_pkg['scaler']
+                    st.session_state['feature_names'] = model_pkg['feature_names']
+                    st.session_state['loaded_model_name'] = model_pkg['model_name']
+                    st.session_state['loaded_model_metrics'] = model_pkg['metrics']
+                    
+                    st.success(f"✅ Model loaded successfully: {model_pkg['model_name']}")
+                    st.info(f"""
+                    **Loaded Model Metrics:**
+                    - Accuracy: {model_pkg['metrics']['accuracy']:.4f}
+                    - Precision: {model_pkg['metrics']['precision']:.4f}
+                    - Recall: {model_pkg['metrics']['recall']:.4f}
+                    - F1 Score: {model_pkg['metrics']['f1']:.4f}
+                    """)
+            else:
+                st.info("No saved models found. Train and save a model first!")
+
+elif sidebar_selection == "🔮 Make Predictions":
+    st.header("🔮 Make Diabetes Predictions")
+    
+    if 'results' not in st.session_state and 'loaded_model' not in st.session_state:
+        st.warning("⚠️ Please train models first in the 'Model Training' section or load a saved model")
+        st.stop()
+    
+    st.subheader("🎯 Select Prediction Source")
+    
+    prediction_source = st.radio("Use model from:", ["Trained Models", "Loaded Model"], horizontal=True)
+    
+    if prediction_source == "Trained Models":
+        if 'results' not in st.session_state:
+            st.error("No trained models available. Please train models first or select 'Loaded Model'.")
+            st.stop()
+        results = st.session_state['results']
+        scaler = st.session_state['scaler']
+        feature_names = st.session_state['feature_names']
+        selected_model_pred = st.selectbox("Select model for prediction:", list(results.keys()))
+        model = results[selected_model_pred]['model']
+    else:
+        if 'loaded_model' not in st.session_state:
+            st.error("No loaded model available. Please load a model from the Model Training section first.")
+            st.stop()
+        model = st.session_state['loaded_model']
+        scaler = st.session_state['scaler']
+        feature_names = st.session_state['feature_names']
+        selected_model_pred = st.session_state.get('loaded_model_name', 'Loaded Model')
+        
+        st.info(f"""
+        **Using Loaded Model:** {selected_model_pred}
+        
+        **Model Metrics:**
+        - Accuracy: {st.session_state['loaded_model_metrics']['accuracy']:.4f}
+        - Precision: {st.session_state['loaded_model_metrics']['precision']:.4f}
+        - Recall: {st.session_state['loaded_model_metrics']['recall']:.4f}
+        - F1 Score: {st.session_state['loaded_model_metrics']['f1']:.4f}
+        """)
+    
+    st.subheader("📝 Enter Patient Information")
+    
+    st.markdown("### Patient Data Input")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        pregnancies = st.number_input("Number of Pregnancies", min_value=0, max_value=20, value=1)
+        glucose = st.number_input("Glucose Level (mg/dL)", min_value=0, max_value=300, value=120)
+        blood_pressure = st.number_input("Blood Pressure (mm Hg)", min_value=0, max_value=200, value=70)
+        skin_thickness = st.number_input("Skin Thickness (mm)", min_value=0, max_value=100, value=20)
+    
+    with col2:
+        insulin = st.number_input("Insulin Level (mu U/ml)", min_value=0, max_value=900, value=80)
+        bmi = st.number_input("BMI", min_value=0.0, max_value=70.0, value=25.0, step=0.1)
+        dpf = st.number_input("Diabetes Pedigree Function", min_value=0.0, max_value=3.0, value=0.5, step=0.01)
+        age = st.number_input("Age (years)", min_value=1, max_value=120, value=30)
+    
+    if st.button("🔮 Predict Diabetes Risk", type="primary"):
+        input_data = np.array([[pregnancies, glucose, blood_pressure, skin_thickness, 
+                               insulin, bmi, dpf, age]])
+        
+        input_scaled = scaler.transform(input_data)
+        
+        prediction = model.predict(input_scaled)[0]
+        prediction_proba = model.predict_proba(input_scaled)[0]
+        
+        st.subheader("📊 Prediction Results")
+        
+        if prediction == 1:
+            st.error(f"⚠️ **High Risk of Diabetes**")
+            st.metric("Diabetes Probability", f"{prediction_proba[1]:.1%}")
+        else:
+            st.success(f"✅ **Low Risk of Diabetes**")
+            st.metric("No Diabetes Probability", f"{prediction_proba[0]:.1%}")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Probability: No Diabetes", f"{prediction_proba[0]:.1%}")
+        with col2:
+            st.metric("Probability: Has Diabetes", f"{prediction_proba[1]:.1%}")
+        
+        fig = go.Figure(data=[go.Bar(
+            x=['No Diabetes', 'Has Diabetes'],
+            y=[prediction_proba[0], prediction_proba[1]],
+            marker_color=['#2ecc71', '#e74c3c']
+        )])
+        fig.update_layout(
+            title='Prediction Probability Distribution',
+            yaxis_title='Probability',
+            yaxis=dict(range=[0, 1])
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.subheader("💡 Contributing Factors")
+        
+        if hasattr(model, 'feature_importances_'):
+            importances = model.feature_importances_
+        elif hasattr(model, 'coef_'):
+            importances = np.abs(model.coef_[0])
+        
+        feature_importance_dict = dict(zip(feature_names, importances))
+        sorted_features = sorted(feature_importance_dict.items(), key=lambda x: x[1], reverse=True)
+        
+        input_values = {
+            'Pregnancies': pregnancies,
+            'Glucose': glucose,
+            'BloodPressure': blood_pressure,
+            'SkinThickness': skin_thickness,
+            'Insulin': insulin,
+            'BMI': bmi,
+            'DiabetesPedigreeFunction': dpf,
+            'Age': age
+        }
+        
+        st.markdown("### 📈 Most Influential Features for This Prediction:")
+        for i, (feature, importance) in enumerate(sorted_features[:5], 1):
+            st.markdown(f"**{i}. {feature}**: {input_values[feature]} (Model importance: {importance:.4f})")
+        
+        st.info("""
+        **Recommendations:**
+        - Maintain regular check-ups with your healthcare provider
+        - Monitor blood glucose levels regularly
+        - Maintain a healthy diet and exercise routine
+        - Keep BMI within healthy range (18.5-24.9)
+        - Manage blood pressure and cholesterol levels
+        """)
+    
+    st.markdown("---")
+    st.subheader("📁 Batch Predictions")
+    st.markdown("""
+    Upload a CSV file with multiple patient records to get diabetes predictions for all of them at once.
+    The CSV should have the same columns as the training data (without the Outcome column).
+    """)
+    
+    batch_file = st.file_uploader("Upload CSV for batch predictions:", type=['csv'], key="batch_upload")
+    
+    if batch_file is not None:
+        try:
+            batch_df = pd.read_csv(batch_file)
+            st.success(f"✅ File uploaded! Found {len(batch_df)} records")
+            
+            st.subheader("📋 Preview of Uploaded Data")
+            st.dataframe(batch_df.head(10))
+            
+            expected_columns = ['Pregnancies', 'Glucose', 'BloodPressure', 'SkinThickness', 
+                              'Insulin', 'BMI', 'DiabetesPedigreeFunction', 'Age']
+            
+            missing_cols = [col for col in expected_columns if col not in batch_df.columns]
+            
+            if missing_cols:
+                st.error(f"❌ Missing required columns: {', '.join(missing_cols)}")
+                st.info(f"Required columns: {', '.join(expected_columns)}")
+            else:
+                if st.button("🚀 Run Batch Predictions", type="primary"):
+                    with st.spinner(f"Processing {len(batch_df)} predictions..."):
+                        batch_data = batch_df[expected_columns].values
+                        
+                        if batch_df.isnull().sum().sum() > 0:
+                            st.warning("⚠️ Found missing values. Imputing with mean...")
+                            imputer = SimpleImputer(strategy='mean')
+                            batch_data = imputer.fit_transform(batch_data)
+                        
+                        batch_scaled = scaler.transform(batch_data)
+                        
+                        predictions = model.predict(batch_scaled)
+                        probabilities = model.predict_proba(batch_scaled)
+                        
+                        results_df = batch_df.copy()
+                        results_df['Predicted_Outcome'] = predictions
+                        results_df['Diabetes_Probability'] = probabilities[:, 1]
+                        results_df['No_Diabetes_Probability'] = probabilities[:, 0]
+                        results_df['Risk_Level'] = results_df['Diabetes_Probability'].apply(
+                            lambda x: 'High Risk' if x > 0.7 else ('Moderate Risk' if x > 0.3 else 'Low Risk')
+                        )
+                        
+                        st.success(f"✅ Batch predictions completed for {len(batch_df)} records!")
+                        
+                        st.subheader("📊 Prediction Summary")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            diabetes_count = (predictions == 1).sum()
+                            st.metric("Predicted Diabetes Cases", f"{diabetes_count} ({diabetes_count/len(batch_df)*100:.1f}%)")
+                        with col2:
+                            high_risk = (results_df['Risk_Level'] == 'High Risk').sum()
+                            st.metric("High Risk Cases", f"{high_risk} ({high_risk/len(batch_df)*100:.1f}%)")
+                        with col3:
+                            avg_prob = results_df['Diabetes_Probability'].mean()
+                            st.metric("Average Diabetes Probability", f"{avg_prob:.1%}")
+                        
+                        st.subheader("📋 Detailed Results")
+                        st.dataframe(results_df, use_container_width=True)
+                        
+                        risk_counts = results_df['Risk_Level'].value_counts()
+                        fig = px.pie(
+                            values=risk_counts.values,
+                            names=risk_counts.index,
+                            title='Risk Level Distribution',
+                            color_discrete_map={
+                                'Low Risk': '#2ecc71',
+                                'Moderate Risk': '#f39c12',
+                                'High Risk': '#e74c3c'
+                            }
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        fig_hist = px.histogram(
+                            results_df,
+                            x='Diabetes_Probability',
+                            nbins=30,
+                            title='Distribution of Diabetes Probabilities',
+                            labels={'Diabetes_Probability': 'Diabetes Probability'},
+                            color_discrete_sequence=['#3498db']
+                        )
+                        st.plotly_chart(fig_hist, use_container_width=True)
+                        
+                        csv_results = results_df.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download Prediction Results",
+                            data=csv_results,
+                            file_name="diabetes_predictions.csv",
+                            mime="text/csv",
+                            type="primary"
+                        )
+                        
+                        st.info("""
+                        **Next Steps for High Risk Cases:**
+                        - Schedule medical consultations for high-risk individuals
+                        - Recommend glucose tolerance testing
+                        - Provide lifestyle modification guidance
+                        - Set up regular monitoring schedules
+                        """)
+                        
+        except Exception as e:
+            st.error(f"❌ Error processing file: {str(e)}")
+            st.info("Please ensure your CSV file has the correct format and column names.")
+
+elif sidebar_selection == "📚 Tutorial & Learning":
+    st.header("📚 Tutorial & Learning Guide")
+    
+    tutorial_section = st.selectbox(
+        "Select tutorial topic:",
+        [
+            "Introduction to Diabetes Prediction",
+            "Understanding Your Data",
+            "Handling Missing Values",
+            "Feature Engineering & Selection",
+            "Model Training Process",
+            "Evaluating Model Performance",
+            "Making Predictions",
+            "Complete Workflow Example"
+        ]
+    )
+    
+    if tutorial_section == "Introduction to Diabetes Prediction":
+        st.markdown("""
+        ## 🎯 Introduction to Diabetes Prediction
+        
+        ### What is Diabetes?
+        Diabetes is a chronic disease that occurs when the body cannot properly process glucose (blood sugar). 
+        There are two main types:
+        - **Type 1**: The body doesn't produce insulin
+        - **Type 2**: The body doesn't use insulin properly (most common)
+        
+        ### Why Machine Learning?
+        Machine learning can help:
+        - ✅ Identify high-risk individuals early
+        - ✅ Analyze complex patterns in health data
+        - ✅ Provide evidence-based risk assessments
+        - ✅ Support healthcare decision-making
+        
+        ### Key Features in Prediction:
+        1. **Glucose**: Most important indicator of diabetes
+        2. **BMI**: Body mass index, indicates obesity risk
+        3. **Age**: Risk increases with age
+        4. **Family History**: Genetic predisposition
+        5. **Pregnancies**: Gestational diabetes risk factor
+        6. **Blood Pressure**: Often associated with diabetes
+        7. **Insulin Levels**: Direct measure of pancreatic function
+        8. **Skin Thickness**: Indirect measure of body fat
+        """)
+    
+    elif tutorial_section == "Understanding Your Data":
+        st.markdown("""
+        ## 📊 Understanding Your Data
+        
+        ### Data Structure:
+        A typical diabetes dataset contains:
+        - **Rows**: Each row represents one patient
+        - **Columns**: Each column represents a health measurement or feature
+        - **Target Variable**: The outcome (0 = No Diabetes, 1 = Has Diabetes)
+        
+        ### Important Statistics:
+        - **Mean**: Average value of a feature
+        - **Median**: Middle value when sorted
+        - **Standard Deviation**: How spread out the values are
+        - **Min/Max**: Range of values
+        
+        ### Data Quality Checks:
+        1. ✅ Check for missing values
+        2. ✅ Identify outliers (unusual values)
+        3. ✅ Verify data types are correct
+        4. ✅ Ensure no duplicate records
+        5. ✅ Check class balance (diabetes vs non-diabetes)
+        
+        ### Visualization Benefits:
+        - Understand feature distributions
+        - Identify relationships between features
+        - Spot anomalies and patterns
+        - Compare diabetic vs non-diabetic groups
+        """)
+    
+    elif tutorial_section == "Handling Missing Values":
+        st.markdown("""
+        ## 🔧 Handling Missing Values
+        
+        ### Why Missing Values Occur:
+        - Measurement errors
+        - Data entry mistakes
+        - Equipment malfunction
+        - Patient non-compliance
+        - Lost records
+        
+        ### Impact of Missing Data:
+        - ❌ Reduces dataset size
+        - ❌ Can bias results
+        - ❌ May reduce model accuracy
+        - ❌ Some algorithms can't handle them
+        
+        ### Imputation Methods:
+        
+        #### 1. Mean Imputation
+        - **How**: Replace missing values with column average
+        - **Pros**: Simple, fast
+        - **Cons**: Reduces variance, ignores relationships
+        - **Best for**: Numerical features with few missing values
+        
+        #### 2. Median Imputation
+        - **How**: Replace missing values with middle value
+        - **Pros**: Robust to outliers
+        - **Cons**: Like mean, reduces variance
+        - **Best for**: Skewed distributions
+        
+        #### 3. Mode (Most Frequent) Imputation
+        - **How**: Replace with most common value
+        - **Pros**: Works for categorical data
+        - **Cons**: Can increase bias
+        - **Best for**: Categorical features
+        
+        #### 4. KNN Imputation
+        - **How**: Uses similar records to predict missing values
+        - **Pros**: Preserves relationships, more accurate
+        - **Cons**: Computationally expensive
+        - **Best for**: Complex patterns, multiple missing values
+        
+        ### Choosing the Right Method:
+        ```
+        IF missing_rate < 5%:
+            USE mean or median
+        ELIF missing_rate < 20%:
+            USE KNN imputation
+        ELSE:
+            CONSIDER removing the feature or collecting more data
+        ```
+        """)
+    
+    elif tutorial_section == "Feature Engineering & Selection":
+        st.markdown("""
+        ## ⚙️ Feature Engineering & Selection
+        
+        ### What is Feature Engineering?
+        Creating new features or transforming existing ones to improve model performance.
+        
+        ### Common Techniques:
+        
+        #### 1. Scaling/Normalization
+        - **Why**: Different features have different ranges
+        - **StandardScaler**: Converts to mean=0, std=1
+        - **MinMaxScaler**: Scales to range [0, 1]
+        - **Important**: Always fit on training data only!
+        
+        #### 2. Creating New Features
+        Examples for diabetes:
+        - BMI categories (underweight, normal, overweight, obese)
+        - Age groups (young, middle-aged, senior)
+        - Glucose-to-insulin ratio
+        - Risk score combinations
+        
+        #### 3. Encoding Categorical Variables
+        - One-hot encoding for nominal categories
+        - Label encoding for ordinal categories
+        
+        ### Feature Selection:
+        
+        #### Why Select Features?
+        - ✅ Reduces overfitting
+        - ✅ Improves model interpretability
+        - ✅ Decreases training time
+        - ✅ Reduces noise
+        
+        #### Methods:
+        1. **Correlation Analysis**: Remove highly correlated features
+        2. **Feature Importance**: Use model-based importance scores
+        3. **Domain Knowledge**: Keep medically relevant features
+        
+        ### Best Practices:
+        - Don't remove features without good reason
+        - Document all transformations
+        - Keep original data separate
+        - Validate transformations make sense
+        """)
+    
+    elif tutorial_section == "Model Training Process":
+        st.markdown("""
+        ## 🤖 Model Training Process
+        
+        ### Step-by-Step Workflow:
+        
+        #### 1. Data Splitting
+        ```
+        - Training Set (70-80%): Used to train the model
+        - Test Set (20-30%): Used to evaluate performance
+        - Why: Prevents overfitting, tests generalization
+        ```
+        
+        #### 2. Choose Algorithms
+        
+        **Logistic Regression**
+        - Simple, interpretable
+        - Fast training
+        - Good baseline
+        - Assumes linear relationships
+        
+        **Random Forest**
+        - Handles non-linear relationships
+        - Robust to outliers
+        - Provides feature importance
+        - Less interpretable
+        
+        **XGBoost**
+        - State-of-the-art performance
+        - Handles missing values
+        - Built-in regularization
+        - More complex to tune
+        
+        #### 3. Training Process
+        ```python
+        # Pseudocode
+        1. Initialize model with parameters
+        2. Feed training data to model
+        3. Model learns patterns from data
+        4. Adjust internal parameters to minimize error
+        5. Repeat until convergence
+        ```
+        
+        #### 4. Hyperparameter Tuning
+        - **Learning rate**: How fast the model learns
+        - **Number of trees**: For forest-based models
+        - **Max depth**: How complex trees can be
+        - **Regularization**: Prevents overfitting
+        
+        ### Common Pitfalls:
+        - ❌ Training on test data (data leakage)
+        - ❌ Not scaling features
+        - ❌ Imbalanced classes not addressed
+        - ❌ Overfitting to training data
+        
+        ### Best Practices:
+        - ✅ Use cross-validation
+        - ✅ Set random seed for reproducibility
+        - ✅ Start simple, then increase complexity
+        - ✅ Monitor both training and test performance
+        """)
+    
+    elif tutorial_section == "Evaluating Model Performance":
+        st.markdown("""
+        ## 📊 Evaluating Model Performance
+        
+        ### Key Metrics Explained:
+        
+        #### 1. Accuracy
+        - **Formula**: (Correct Predictions) / (Total Predictions)
+        - **Range**: 0 to 1 (or 0% to 100%)
+        - **Interpretation**: Overall correctness
+        - **Limitation**: Misleading with imbalanced data
+        
+        #### 2. Precision
+        - **Formula**: True Positives / (True Positives + False Positives)
+        - **Question**: "Of all positive predictions, how many were correct?"
+        - **Use case**: When false positives are costly
+        
+        #### 3. Recall (Sensitivity)
+        - **Formula**: True Positives / (True Positives + False Negatives)
+        - **Question**: "Of all actual positives, how many did we find?"
+        - **Use case**: When missing cases (false negatives) is costly
+        - **For diabetes**: High recall means fewer missed diabetes cases
+        
+        #### 4. F1 Score
+        - **Formula**: 2 × (Precision × Recall) / (Precision + Recall)
+        - **Purpose**: Balance between precision and recall
+        - **Use case**: When you need both low false positives and false negatives
+        
+        ### Confusion Matrix:
+        ```
+                    Predicted
+                    No    Yes
+        Actual No   TN    FP
+               Yes  FN    TP
+        
+        TN = True Negative (Correctly predicted no diabetes)
+        FP = False Positive (Incorrectly predicted diabetes)
+        FN = False Negative (Missed diabetes case) ⚠️ Most dangerous!
+        TP = True Positive (Correctly predicted diabetes)
+        ```
+        
+        ### ROC Curve & AUC:
+        - **ROC**: Shows trade-off between true positive and false positive rates
+        - **AUC**: Area under ROC curve
+        - **Interpretation**:
+          - AUC = 0.5: Random guessing
+          - AUC = 0.7-0.8: Acceptable
+          - AUC = 0.8-0.9: Excellent
+          - AUC > 0.9: Outstanding
+        
+        ### Which Metric to Optimize?
+        
+        **For Diabetes Screening:**
+        - Prioritize **Recall**: Don't miss diabetes cases
+        - Accept some false positives (can be ruled out with further testing)
+        - A false negative (missing diabetes) is more harmful than a false positive
+        
+        ### Model Selection:
+        1. Compare multiple metrics
+        2. Consider the real-world application
+        3. Test on unseen data
+        4. Validate with domain experts
+        """)
+    
+    elif tutorial_section == "Making Predictions":
+        st.markdown("""
+        ## 🔮 Making Predictions
+        
+        ### Prediction Process:
+        
+        #### 1. Prepare Input Data
+        ```python
+        # Ensure same format as training data
+        - Same features in same order
+        - Same data types
+        - Handle missing values
+        - Apply same scaling
+        ```
+        
+        #### 2. Scale the Input
+        ```python
+        # CRITICAL: Use the SAME scaler from training
+        input_scaled = scaler.transform(new_data)
+        # DO NOT fit a new scaler!
+        ```
+        
+        #### 3. Make Prediction
+        ```python
+        # Binary prediction (0 or 1)
+        prediction = model.predict(input_scaled)
+        
+        # Probability scores
+        probabilities = model.predict_proba(input_scaled)
+        # Returns [prob_no_diabetes, prob_diabetes]
+        ```
+        
+        #### 4. Interpret Results
+        - **Threshold**: Usually 0.5 (50%)
+        - **Probability > 0.5**: Predict diabetes
+        - **Probability < 0.5**: Predict no diabetes
+        - **Can adjust threshold** based on risk tolerance
+        
+        ### Understanding Probability Scores:
+        
+        - **0-30%**: Low risk
+        - **30-50%**: Moderate-low risk
+        - **50-70%**: Moderate-high risk
+        - **70-90%**: High risk
+        - **90-100%**: Very high risk
+        
+        ### Clinical Application:
+        
+        #### High-Risk Prediction (>70%):
+        - Immediate medical consultation
+        - Glucose tolerance test
+        - Lifestyle modifications
+        - Regular monitoring
+        
+        #### Moderate Risk (30-70%):
+        - Preventive measures
+        - Diet and exercise changes
+        - Annual screening
+        
+        #### Low Risk (<30%):
+        - Maintain healthy lifestyle
+        - Routine check-ups
+        
+        ### Important Considerations:
+        - ⚠️ ML predictions are NOT medical diagnoses
+        - ⚠️ Always consult healthcare professionals
+        - ⚠️ Use as screening tool, not replacement for medical advice
+        - ⚠️ Model accuracy depends on data quality
+        """)
+    
+    elif tutorial_section == "Complete Workflow Example":
+        st.markdown("""
+        ## 🎓 Complete Workflow Example
+        
+        ### End-to-End Process:
+        
+        #### Step 1: Data Collection
+        ```
+        ✅ Gather patient health records
+        ✅ Ensure data privacy and consent
+        ✅ Verify data quality
+        ✅ Document data sources
+        ```
+        
+        #### Step 2: Data Exploration
+        ```python
+        1. Load data into pandas DataFrame
+        2. Check shape: df.shape
+        3. View first rows: df.head()
+        4. Get statistics: df.describe()
+        5. Check data types: df.dtypes
+        6. Identify missing values: df.isnull().sum()
+        ```
+        
+        #### Step 3: Data Preprocessing
+        ```python
+        1. Handle missing values:
+           - Choose imputation method
+           - Apply to dataset
+           - Verify no missing values remain
+        
+        2. Check for outliers:
+           - Use box plots
+           - Decide on handling strategy
+        
+        3. Split data:
+           - X = features
+           - y = target (Outcome)
+           - train_test_split (80-20)
+        
+        4. Scale features:
+           - Fit scaler on training data
+           - Transform both train and test
+        ```
+        
+        #### Step 4: Model Training
+        ```python
+        1. Choose algorithms:
+           - Logistic Regression (baseline)
+           - Random Forest (complex patterns)
+           - XGBoost (best performance)
+        
+        2. Train each model:
+           model.fit(X_train, y_train)
+        
+        3. Make predictions:
+           y_pred = model.predict(X_test)
+        ```
+        
+        #### Step 5: Model Evaluation
+        ```python
+        1. Calculate metrics:
+           - Accuracy
+           - Precision
+           - Recall
+           - F1 Score
+        
+        2. Visualize results:
+           - Confusion matrix
+           - ROC curves
+           - Feature importance
+        
+        3. Compare models:
+           - Select best performer
+           - Consider trade-offs
+        ```
+        
+        #### Step 6: Model Interpretation
+        ```python
+        1. Feature importance:
+           - Which features matter most?
+           - Does it make medical sense?
+        
+        2. Error analysis:
+           - Where does model fail?
+           - Which cases are misclassified?
+        
+        3. Validate with domain experts:
+           - Medical review
+           - Clinical relevance
+        ```
+        
+        #### Step 7: Deployment & Use
+        ```python
+        1. Save trained model:
+           - Pickle or joblib
+           - Include scaler
+        
+        2. Create prediction interface:
+           - User-friendly input
+           - Clear output interpretation
+        
+        3. Monitor performance:
+           - Track predictions
+           - Update model as needed
+        ```
+        
+        ### Real-World Example:
+        
+        **Scenario**: Screening 1000 patients
+        
+        **Input**: Patient health measurements
+        
+        **Process**:
+        1. Preprocess data (handle missing values)
+        2. Scale features using saved scaler
+        3. Predict using trained model
+        4. Get probability scores
+        
+        **Output**:
+        - 200 high-risk patients → Priority screening
+        - 300 moderate-risk patients → Preventive care
+        - 500 low-risk patients → Routine monitoring
+        
+        **Impact**:
+        - Early intervention for high-risk group
+        - Resource allocation optimization
+        - Reduced healthcare costs
+        - Improved patient outcomes
+        
+        ### Key Takeaways:
+        1. ✅ Data quality is crucial
+        2. ✅ Preprocessing significantly impacts results
+        3. ✅ Multiple models provide better insights
+        4. ✅ Evaluation metrics guide model selection
+        5. ✅ Interpretability is essential for healthcare
+        6. ✅ Regular model updates maintain accuracy
+        7. ✅ Always validate with medical professionals
+        """)
+    
+    st.info("💡 Tip: Navigate through all tutorial sections to get a comprehensive understanding of the diabetes prediction process!")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("""
+### 📖 Quick Help
+- **Data Format**: CSV with health measurements
+- **Missing Data**: Handled automatically
+- **Models**: Logistic Regression, Random Forest, XGBoost
+- **Metrics**: Accuracy, Precision, Recall, F1, ROC-AUC
+""")
+
+st.sidebar.markdown("---")
+st.sidebar.info("Built with Streamlit | Machine Learning | Healthcare AI")
