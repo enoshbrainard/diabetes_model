@@ -74,12 +74,16 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(72,219,251,0.3);
     }
     .metric-card {
-        background: white;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        transition: transform 0.3s ease;
-    }
+    background-color: white;   /* 👈 white background */
+    color: #333;               /* 👈 dark text (you can change this) */
+    border: 2px solid white;   /* 👈 white border */
+    font-weight: bold;
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    transition: transform 0.3s ease;
+}
+
     .metric-card:hover {
         transform: scale(1.05);
     }
@@ -664,7 +668,7 @@ elif sidebar_selection == "📊 Data Upload & Analysis":
                 df_original = pd.read_csv(uploaded_file)
                 st.success(f"✅ File uploaded successfully! Shape: {df_original.shape}")
                 st.session_state['df_original'] = df_original
-                st.balloons()
+                # st.balloons()
             except Exception as e:
                 st.error(f"❌ Error reading file: {e}")
                 st.stop()
@@ -756,7 +760,7 @@ elif sidebar_selection == "📊 Data Upload & Analysis":
                 st.session_state['df_imputed'] = df_imputed
                 st.session_state['imputation_method'] = imputation_method
                 st.markdown("<div class='success-box'>✅ Missing values imputed successfully!</div>", unsafe_allow_html=True)
-                st.balloons()
+                # st.balloons()
         
         if 'df_imputed' in st.session_state:
             df_imputed = st.session_state['df_imputed']
@@ -935,7 +939,7 @@ elif sidebar_selection == "🤖 Train Models":
             st.session_state['y_test'] = y_test
             
             st.markdown("<div class='success-box'>🎉 All models trained successfully!</div>", unsafe_allow_html=True)
-            st.balloons()
+            # st.balloons()
     
     if 'training_results' in st.session_state:
         results = st.session_state['training_results']
@@ -1126,7 +1130,7 @@ elif sidebar_selection == "🤖 Train Models":
                 
                 filename = save_model(model_to_save, model, scaler, feature_names, metrics)
                 st.success(f"✅ Model saved as: {filename}")
-                st.balloons()
+                # st.balloons()
 
 elif sidebar_selection == "🔮 Make Predictions":
     st.header("🔮 Make Predictions on New Data")
@@ -1222,7 +1226,7 @@ elif sidebar_selection == "🔮 Make Predictions":
                 st.session_state['X_pred_scaled'] = X_pred_scaled
                 
                 st.markdown("<div class='success-box'>🎉 Predictions generated successfully!</div>", unsafe_allow_html=True)
-                st.balloons()
+                # st.balloons()
         
         if 'prediction_results' in st.session_state:
             df_results = st.session_state['prediction_results']

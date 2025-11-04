@@ -477,7 +477,7 @@ elif sidebar_selection == "📊 Data Upload & Preprocessing":
                 st.session_state['df_imputed'] = df_imputed
                 st.session_state['imputation_method'] = imputation_method
                 st.success(f"✅ Missing values imputed using {imputation_method} method!")
-                st.balloons()
+                
         
         if 'df_imputed' in st.session_state:
             df_imputed = st.session_state['df_imputed']
@@ -642,7 +642,7 @@ elif sidebar_selection == "🤖 Model Training":
             st.session_state['feature_names'] = X.columns.tolist()
             
             st.success("✅ Models trained successfully!")
-            st.balloons()
+            
     
     if 'results' in st.session_state:
         results = st.session_state['results']
@@ -759,7 +759,7 @@ elif sidebar_selection == "🤖 Model Training":
                     metrics
                 )
                 st.success(f"✅ Model saved successfully: {filename}")
-                st.balloons()
+                
         
         with col2:
             st.markdown("#### Load Saved Model")
